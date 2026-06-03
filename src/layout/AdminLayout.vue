@@ -9,8 +9,13 @@ const route = useRoute()
 const menuItems = [
   { path: '/dashboard', title: '数据看板' },
   { path: '/orders', title: '订单管理' },
+  { path: '/riders', title: '骑手管理' },
+  { path: '/communities', title: '小区管理' },
   { path: '/products', title: '商品管理' },
   { path: '/categories', title: '分类管理' },
+  { path: '/posts', title: '帖子管理' },
+  { path: '/certs', title: '认证管理' },
+  { path: '/chat', title: '客服消息' },
   { path: '/flash-sale', title: '特惠管理' },
   { path: '/coupons', title: '优惠券管理' }
 ]

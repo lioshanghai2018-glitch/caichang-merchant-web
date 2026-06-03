@@ -75,14 +75,22 @@ const fetchFlashSale = async () => {
     console.log('res.data:', res?.data)
     const data = extractData(res)
     console.log('extractData 结果:', data)
-    if (data && data._id) {
-      flashSale.value = data
+    // getFlashSale 返回数组（按 startTime desc）。优先选有商品的（用户持续用的那个），
+    // 其次选进行中的，最后才用最新创建的（避免历史空活动覆盖有数据的）
+    const saleList = Array.isArray(data) ? data : (data ? [data] : [])
+    const now = Date.now()
+    const first = saleList.find(s => (s.products || []).length > 0)
+      || saleList.find(s => s.status === true && s.startTime <= now && s.endTime > now)
+      || saleList[0]
+      || null
+    if (first) {
+      flashSale.value = first
       flashSaleForm.value = {
-        id: data._id,
-        name: data.name || '限时特惠活动',
-        startTime: new Date(data.startTime),
-        endTime: new Date(data.endTime),
-        status: data.status
+        id: first._id,
+        name: first.name || '限时特惠活动',
+        startTime: new Date(first.startTime),
+        endTime: new Date(first.endTime),
+        status: first.status
       }
     } else {
       flashSale.value = null
@@ -112,10 +120,14 @@ const saveFlashSaleData = async () => {
       status: flashSaleForm.value.status
     })
     console.log('保存响应:', res)
+    if (res?.data?.code !== 0) {
+      ElMessage.error(res?.data?.msg || '保存失败')
+      return
+    }
     ElMessage.success('保存成功')
     // 直接更新 flashSale.value
     flashSale.value = {
-      _id: res.data?.data?.id || flashSaleForm.value.id,
+      _id: res.data?.data?.id || res.data?.data?._id || flashSaleForm.value.id,
       name: flashSaleForm.value.name,
       startTime: flashSaleForm.value.startTime.getTime(),
       endTime: flashSaleForm.value.endTime.getTime(),
@@ -152,7 +164,7 @@ const openAddProductDialog = () => {
     originalPrice: 0,
     flashPrice: 0,
     stock: 99,
-    specs: [{ name: '默认', price: 0, stock: 99 }]
+    specs: [{ name: '默认', price: 0, originalPrice: 0, stock: 99 }]
   }
   imageUrlInput.value = ''
   productDialogVisible.value = true
@@ -167,7 +179,9 @@ const openEditProductDialog = (row) => {
     originalPrice: row.originalPrice || 0,
     flashPrice: row.flashPrice || 0,
     stock: row.stock || 0,
-    specs: row.specs?.length ? [...row.specs] : [{ name: '默认', price: 0, stock: 99 }]
+    specs: row.specs?.length
+      ? row.specs.map(s => ({ name: s.name || '', price: s.price || 0, originalPrice: s.originalPrice || 0, stock: s.stock || 0 }))
+      : [{ name: '默认', price: 0, originalPrice: 0, stock: 99 }]
   }
   imageUrlInput.value = row.image || ''
   productDialogVisible.value = true
@@ -181,13 +195,15 @@ const saveProduct = async () => {
   }
 
   try {
+    // 顶层价格/库存由规格自动填充（避免重复录入）
+    const firstSpec = productForm.value.specs.find(s => s.name) || {}
     const data = {
       flashSaleId: flashSale.value._id,
       name: productForm.value.name,
       image: productForm.value.image,
-      originalPrice: productForm.value.originalPrice,
-      flashPrice: productForm.value.flashPrice,
-      stock: productForm.value.stock,
+      originalPrice: productForm.value.originalPrice || firstSpec.originalPrice || firstSpec.price || 0,
+      flashPrice: productForm.value.flashPrice || firstSpec.price || 0,
+      stock: productForm.value.stock || firstSpec.stock || 0,
       specs: productForm.value.specs.filter(s => s.name)
     }
 
@@ -195,7 +211,11 @@ const saveProduct = async () => {
       await updateFlashSaleProduct(productForm.value.id, data)
       ElMessage.success('更新成功')
     } else {
-      await addFlashSaleProduct(data)
+      const res = await addFlashSaleProduct(data)
+      if (res?.data?.code !== 0) {
+        ElMessage.error(res?.data?.msg || '添加失败')
+        return
+      }
       ElMessage.success('添加成功')
     }
     productDialogVisible.value = false
@@ -250,21 +270,27 @@ const addSelectedProducts = async () => {
     return
   }
   try {
+    let failCount = 0
     for (const productId of selectedProductIds.value) {
       const product = productLibrary.value.find(p => p._id === productId)
       if (product) {
-        await addFlashSaleProduct({
+        const res = await addFlashSaleProduct({
           flashSaleId: flashSale.value._id,
           name: product.name,
           image: product.images?.[0] || '',
           originalPrice: product.specs?.[0]?.price || 0,
           flashPrice: product.specs?.[0]?.price || 0,
           stock: product.specs?.[0]?.stock || 99,
-          specs: product.specs || []
+          specs: (product.specs || []).map(s => ({ ...s, originalPrice: s.originalPrice || s.price || 0 }))
         })
+        if (res?.data?.code !== 0) failCount++
       }
     }
-    ElMessage.success('添加成功')
+    if (failCount > 0) {
+      ElMessage.warning(`已添加，${failCount} 个失败`)
+    } else {
+      ElMessage.success('添加成功')
+    }
     selectProductDialogVisible.value = false
     fetchFlashSaleProducts()
   } catch (e) {
@@ -284,7 +310,7 @@ const addImage = () => {
 
 // 规格管理
 const addSpec = () => {
-  productForm.value.specs.push({ name: '', price: 0, stock: 99 })
+  productForm.value.specs.push({ name: '', price: 0, originalPrice: 0, stock: 99 })
 }
 
 const removeSpec = (index) => {
@@ -293,9 +319,10 @@ const removeSpec = (index) => {
   }
 }
 
-onMounted(() => {
-  fetchFlashSale()
-  fetchFlashSaleProducts()
+onMounted(async () => {
+  // 必须先拿到 flashSale.value._id 再查商品（之前并发调用导致 flashSaleId 传空）
+  await fetchFlashSale()
+  await fetchFlashSaleProducts()
 })
 </script>
 
@@ -402,22 +429,24 @@ onMounted(() => {
           </div>
           <el-image v-if="productForm.image" :src="productForm.image" style="width: 100px; height: 100px; margin-top: 10px;" fit="cover" />
         </el-form-item>
-        <el-form-item label="原价">
-          <el-input-number v-model="productForm.originalPrice" :min="0" :precision="2" />
-        </el-form-item>
-        <el-form-item label="特惠价">
-          <el-input-number v-model="productForm.flashPrice" :min="0" :precision="2" />
-        </el-form-item>
-        <el-form-item label="库存">
-          <el-input-number v-model="productForm.stock" :min="0" />
-        </el-form-item>
         <el-form-item label="规格">
-          <div v-for="(spec, index) in productForm.specs" :key="index" style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px;">
-            <el-input v-model="spec.name" placeholder="规格名称" style="width: 100px;" />
-            <span>价格</span>
-            <el-input-number v-model="spec.price" :min="0" :precision="2" style="width: 100px;" />
-            <span>库存</span>
-            <el-input-number v-model="spec.stock" :min="0" style="width: 100px;" />
+          <div v-for="(spec, index) in productForm.specs" :key="index" class="spec-row">
+            <div class="spec-field">
+              <span class="spec-label">规格名称</span>
+              <el-input v-model="spec.name" placeholder="如 500g" style="width: 140px;" />
+            </div>
+            <div class="spec-field">
+              <span class="spec-label">价格</span>
+              <el-input-number v-model="spec.price" :min="0" :precision="2" style="width: 140px;" />
+            </div>
+            <div class="spec-field">
+              <span class="spec-label">原价</span>
+              <el-input-number v-model="spec.originalPrice" :min="0" :precision="2" style="width: 140px;" />
+            </div>
+            <div class="spec-field">
+              <span class="spec-label">库存</span>
+              <el-input-number v-model="spec.stock" :min="0" style="width: 140px;" />
+            </div>
             <el-button v-if="productForm.specs.length > 1" type="danger" link @click="removeSpec(index)">删除</el-button>
           </div>
           <el-button type="primary" link @click="addSpec">+ 添加规格</el-button>
@@ -471,5 +500,26 @@ onMounted(() => {
   display: flex;
   justify-content: space-between;
   align-items: center;
+}
+.spec-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  align-items: flex-end;
+  margin-bottom: 14px;
+  padding: 12px;
+  border: 1px solid #ebeef5;
+  border-radius: 4px;
+  background: #fafafa;
+}
+.spec-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.spec-label {
+  font-size: 12px;
+  color: #909399;
+  line-height: 1;
 }
 </style>
