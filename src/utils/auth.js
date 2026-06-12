@@ -1,13 +1,21 @@
-// 商家 web端鉴权
+// 商家web端鉴权工具
 import uniCloud from '../api/uniCloud.js'
 
 const STORAGE_KEY = {
   MERCHANT_ID: 'merchant_id',
   TOKEN: 'uni_id_token',
+  TOKEN_EXPIRED: 'uni_id_token_expired',
   USER_INFO: 'shop_info'
 }
 
 export function isLoggedIn() {
+  const token = localStorage.getItem(STORAGE_KEY.TOKEN)
+  const expired = localStorage.getItem(STORAGE_KEY.TOKEN_EXPIRED)
+  if (!token) return false
+  if (expired && Date.now() > Number(expired)) {
+    clearAuth()
+    return false
+  }
   return !!localStorage.getItem(STORAGE_KEY.MERCHANT_ID)
 }
 
@@ -19,17 +27,17 @@ export function getToken() {
   return localStorage.getItem(STORAGE_KEY.TOKEN) || ''
 }
 
-export function setMerchantId(id) {
-  localStorage.setItem(STORAGE_KEY.MERCHANT_ID, id)
-}
-
-export function setToken(token) {
-  localStorage.setItem(STORAGE_KEY.TOKEN, token)
+export function setAuth(data) {
+  if (data.merchantId) localStorage.setItem(STORAGE_KEY.MERCHANT_ID, data.merchantId)
+  if (data.token) localStorage.setItem(STORAGE_KEY.TOKEN, data.token)
+  if (data.tokenExpired) localStorage.setItem(STORAGE_KEY.TOKEN_EXPIRED, String(data.tokenExpired))
+  if (data.shopInfo) localStorage.setItem(STORAGE_KEY.USER_INFO, JSON.stringify(data.shopInfo))
 }
 
 export function clearAuth() {
   localStorage.removeItem(STORAGE_KEY.MERCHANT_ID)
   localStorage.removeItem(STORAGE_KEY.TOKEN)
+  localStorage.removeItem(STORAGE_KEY.TOKEN_EXPIRED)
   localStorage.removeItem(STORAGE_KEY.USER_INFO)
 }
 
@@ -39,17 +47,10 @@ export function logout() {
 }
 
 export async function loginMerchant(phone, password) {
-  const res = await uniCloud.post('/merchantLogin', { method: 'merchantLogin', params: { phone, password } })
-  if (res.data && res.data.merchantId) {
-    setMerchantId(res.data.merchantId)
-    if (res.data.token) setToken(res.data.token)
-    if (res.data.shopInfo) localStorage.setItem(STORAGE_KEY.USER_INFO, JSON.stringify(res.data.shopInfo))
+  const res = await uniCloud.callMethod('merchantLogin', { phone, password })
+  const data = res.data
+  if (data && data.merchantId) {
+    setAuth(data)
   }
-  return res.data
-}
-
-export function loginAsTestMerchant(merchantId) {
-  setMerchantId(merchantId)
-  setToken('test-mode')
-  localStorage.setItem(STORAGE_KEY.USER_INFO, JSON.stringify({ name: '测试店铺', mode: 'test' }))
+  return data
 }

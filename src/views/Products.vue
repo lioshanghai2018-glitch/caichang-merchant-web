@@ -1,7 +1,7 @@
 <script setup>
 import { ref, onMounted, computed } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
-import { getProducts, addProduct, updateProduct, deleteProduct, fixProductCategories, diagnoseCategories, debugCategoryPage } from '../api/products'
+import { ElMessage, ElMessageBox, ElLoading } from 'element-plus'
+import { getProducts, addProduct, updateProduct, deleteProduct, fixProductCategories, diagnoseCategories, debugCategoryPage, uploadImage } from '../api/products'
 import { getList as getCategories } from '../api/categories'
 import * as XLSX from 'xlsx'
 
@@ -12,7 +12,6 @@ const dialogTitle = ref('添加商品')
 const formRef = ref(null)
 const categories = ref([])
 const uploadLoading = ref(false)
-const imageUrlInput = ref('')
 
 // 筛选条件
 const filterCategory = ref('')
@@ -264,27 +263,50 @@ const removeSpec = (index) => {
   }
 }
 
-// 图片 URL 管理
-const addImageByUrl = () => {
-  if (!imageUrlInput.value) {
-    ElMessage.warning('请输入图片地址')
-    return
-  }
-  if (formData.value.images.length >= 9) {
-    ElMessage.warning('最多上传9张图片')
-    return
-  }
-  formData.value.images.push(imageUrlInput.value)
-  imageUrlInput.value = ''
-}
-
+// 图片管理
 const removeImage = (index) => {
   formData.value.images.splice(index, 1)
 }
 
-// 初始化编辑时的图片列表
-const initImageList = () => {
-  imageUrlInput.value = ''
+const beforeImageUpload = (file) => {
+  if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
+    ElMessage.warning('只支持 JPG/PNG/WebP 格式')
+    return false
+  }
+  if (file.size > 5 * 1024 * 1024) {
+    ElMessage.warning('图片不能超过 5MB')
+    return false
+  }
+  if (formData.value.images.length >= 9) {
+    ElMessage.warning('最多 9 张')
+    return false
+  }
+  return true
+}
+
+const customUpload = async ({ file }) => {
+  const loading = ElLoading.service({ text: '上传中...' })
+  try {
+    const base64 = await new Promise((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = () => resolve(reader.result)
+      reader.onerror = reject
+      reader.readAsDataURL(file)
+    })
+    const ext = (file.name.split('.').pop() || 'jpg').toLowerCase()
+    const cloudPath = `merchant/product/${Date.now()}_${Math.random().toString(36).slice(2, 6)}.${ext}`
+    const res = await uploadImage(base64, cloudPath)
+    if (res.data?.code === 0 && res.data?.data?.fileID) {
+      formData.value.images.push(res.data.data.fileID)
+      ElMessage.success('上传成功')
+    } else {
+      ElMessage.error(res.data?.msg || '上传失败')
+    }
+  } catch (e) {
+    ElMessage.error('上传失败: ' + (e.message || e))
+  } finally {
+    loading.close()
+  }
 }
 
 // ========== 批量导入导出 ==========
@@ -543,7 +565,7 @@ onMounted(() => {
       </el-table-column>
     </el-table>
 
-    <el-dialog v-model="dialogVisible" :title="dialogTitle" width="800px" @opened="initImageList">
+    <el-dialog v-model="dialogVisible" :title="dialogTitle" width="800px">
       <el-form ref="formRef" :model="formData" :rules="rules" label-width="100px">
         <el-form-item label="商品名称" prop="name">
           <el-input v-model="formData.name" placeholder="请输入商品名称" />
@@ -556,17 +578,26 @@ onMounted(() => {
         </el-form-item>
 
         <el-form-item label="商品图片">
-          <div class="image-input-row">
-            <el-input v-model="imageUrlInput" placeholder="请输入图片URL" style="flex: 1;" />
-            <el-button @click="addImageByUrl" style="margin-left: 10px;">添加</el-button>
-          </div>
-          <div class="image-list" v-if="formData.images.length > 0">
+          <div class="image-grid">
             <div v-for="(url, index) in formData.images" :key="index" class="image-item">
               <el-image :src="url" fit="cover" class="image-preview" />
               <el-button type="danger" circle size="small" @click="removeImage(index)" class="remove-btn">×</el-button>
             </div>
+            <el-upload
+              v-if="formData.images.length < 9"
+              :show-file-list="false"
+              :http-request="customUpload"
+              :before-upload="beforeImageUpload"
+              accept="image/jpeg,image/png,image/webp"
+              class="upload-tile"
+            >
+              <div class="upload-placeholder">
+                <span class="plus-icon">+</span>
+                <span class="upload-text">添加图片</span>
+              </div>
+            </el-upload>
           </div>
-          <div class="upload-tip">支持输入图片URL，最多9张，建议尺寸：180×180像素</div>
+          <div class="upload-tip">点击 + 添加图片，最多 9 张，单张不超过 5MB</div>
         </el-form-item>
 
         <el-form-item label="商品描述">
@@ -693,24 +724,20 @@ onMounted(() => {
   font-size: 12px;
   margin-top: 8px;
 }
-.image-input-row {
-  display: flex;
-  align-items: center;
-}
-.image-list {
+.image-grid {
   display: flex;
   flex-wrap: wrap;
-  margin-top: 10px;
+  gap: 10px;
 }
 .image-item {
   position: relative;
-  margin-right: 10px;
-  margin-bottom: 10px;
+  width: 100px;
+  height: 100px;
 }
 .image-preview {
   width: 100px;
   height: 100px;
-  border-radius: 4px;
+  border-radius: 6px;
 }
 .remove-btn {
   position: absolute;
@@ -720,5 +747,34 @@ onMounted(() => {
   height: 20px;
   padding: 0;
   font-size: 14px;
+}
+.upload-tile {
+  width: 100px;
+  height: 100px;
+}
+.upload-placeholder {
+  width: 100px;
+  height: 100px;
+  border: 1px dashed #d9d9d9;
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-sizing: border-box;
+}
+.upload-placeholder:hover {
+  border-color: #4F9A42;
+}
+.plus-icon {
+  font-size: 28px;
+  color: #999;
+  line-height: 1;
+}
+.upload-text {
+  font-size: 12px;
+  color: #999;
+  margin-top: 4px;
 }
 </style>

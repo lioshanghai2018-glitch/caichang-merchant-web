@@ -8,9 +8,9 @@ export const updateProduct = (id, data) => uniCloud.callMethod('updateProduct', 
 
 export const deleteProduct = (id) => uniCloud.callMethod('deleteProduct', { id })
 
-export const uploadImage = (base64Data, fileName) => uniCloud.callMethod('uploadImage', {
-  imageData: base64Data,
-  fileName: fileName
+export const uploadImage = (base64Data, cloudPath) => uniCloud.callMethod('uploadImageBase64', {
+  fileData: base64Data,
+  cloudPath: cloudPath
 })
 
 // 数据修复

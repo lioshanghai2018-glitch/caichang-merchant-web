@@ -1,8 +1,8 @@
 <script setup>
 import { ref, onMounted, computed } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage, ElMessageBox, ElLoading } from 'element-plus'
 import { getFlashSale, saveFlashSale, getFlashSaleProducts, addFlashSaleProduct, updateFlashSaleProduct, deleteFlashSaleProduct } from '../api/flashSale'
-import { getProducts } from '../api/products'
+import { getProducts, uploadImage } from '../api/products'
 
 const loading = ref(false)
 const productDialogVisible = ref(false)
@@ -33,7 +33,6 @@ const productForm = ref({
   specs: [{ name: '默认', price: 0, stock: 99 }]
 })
 const productFormRef = ref(null)
-const imageUrlInput = ref('')
 
 // 商品库
 const productLibrary = ref([])
@@ -166,7 +165,6 @@ const openAddProductDialog = () => {
     stock: 99,
     specs: [{ name: '默认', price: 0, originalPrice: 0, stock: 99 }]
   }
-  imageUrlInput.value = ''
   productDialogVisible.value = true
 }
 
@@ -183,7 +181,6 @@ const openEditProductDialog = (row) => {
       ? row.specs.map(s => ({ name: s.name || '', price: s.price || 0, originalPrice: s.originalPrice || 0, stock: s.stock || 0 }))
       : [{ name: '默认', price: 0, originalPrice: 0, stock: 99 }]
   }
-  imageUrlInput.value = row.image || ''
   productDialogVisible.value = true
 }
 
@@ -298,14 +295,42 @@ const addSelectedProducts = async () => {
   }
 }
 
-// 添加图片
-const addImage = () => {
-  if (!imageUrlInput.value) {
-    ElMessage.warning('请输入图片地址')
-    return
+// 上传图片到云存储
+const beforeImageUpload = (file) => {
+  if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
+    ElMessage.warning('只支持 JPG/PNG/WebP 格式')
+    return false
   }
-  productForm.value.image = imageUrlInput.value
-  imageUrlInput.value = ''
+  if (file.size > 5 * 1024 * 1024) {
+    ElMessage.warning('图片不能超过 5MB')
+    return false
+  }
+  return true
+}
+
+const customUpload = async ({ file }) => {
+  const loading = ElLoading.service({ text: '上传中...' })
+  try {
+    const base64 = await new Promise((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = () => resolve(reader.result)
+      reader.onerror = reject
+      reader.readAsDataURL(file)
+    })
+    const ext = (file.name.split('.').pop() || 'jpg').toLowerCase()
+    const cloudPath = `merchant/flashsale/${Date.now()}_${Math.random().toString(36).slice(2, 6)}.${ext}`
+    const res = await uploadImage(base64, cloudPath)
+    if (res.data?.code === 0 && res.data?.data?.fileID) {
+      productForm.value.image = res.data.data.fileID
+      ElMessage.success('上传成功')
+    } else {
+      ElMessage.error(res.data?.msg || '上传失败')
+    }
+  } catch (e) {
+    ElMessage.error('上传失败: ' + (e.message || e))
+  } finally {
+    loading.close()
+  }
 }
 
 // 规格管理
@@ -423,11 +448,26 @@ onMounted(async () => {
           <el-input v-model="productForm.name" placeholder="请输入商品名称" />
         </el-form-item>
         <el-form-item label="商品图片">
-          <div style="display: flex; align-items: center; gap: 10px;">
-            <el-input v-model="imageUrlInput" placeholder="输入图片URL" style="flex: 1;" />
-            <el-button @click="addImage">添加</el-button>
+          <div class="flash-image-row">
+            <div v-if="productForm.image" class="flash-image-item">
+              <el-image :src="productForm.image" fit="cover" class="flash-image-preview" />
+              <el-button type="danger" circle size="small" @click="productForm.image = ''" class="flash-remove-btn">×</el-button>
+            </div>
+            <el-upload
+              v-if="!productForm.image"
+              :show-file-list="false"
+              :http-request="customUpload"
+              :before-upload="beforeImageUpload"
+              accept="image/jpeg,image/png,image/webp"
+              class="upload-tile"
+            >
+              <div class="upload-placeholder">
+                <span class="plus-icon">+</span>
+                <span class="upload-text">添加图片</span>
+              </div>
+            </el-upload>
           </div>
-          <el-image v-if="productForm.image" :src="productForm.image" style="width: 100px; height: 100px; margin-top: 10px;" fit="cover" />
+          <div class="upload-tip">点击 + 添加图片，单张不超过 5MB</div>
         </el-form-item>
         <el-form-item label="规格">
           <div v-for="(spec, index) in productForm.specs" :key="index" class="spec-row">
@@ -516,6 +556,64 @@ onMounted(async () => {
   display: flex;
   flex-direction: column;
   gap: 4px;
+}
+.flash-image-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.flash-image-item {
+  position: relative;
+  width: 100px;
+  height: 100px;
+}
+.flash-image-preview {
+  width: 100px;
+  height: 100px;
+  border-radius: 6px;
+}
+.flash-remove-btn {
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  font-size: 14px;
+}
+.upload-tile {
+  width: 100px;
+  height: 100px;
+}
+.upload-placeholder {
+  width: 100px;
+  height: 100px;
+  border: 1px dashed #d9d9d9;
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-sizing: border-box;
+}
+.upload-placeholder:hover {
+  border-color: #4F9A42;
+}
+.plus-icon {
+  font-size: 28px;
+  color: #999;
+  line-height: 1;
+}
+.upload-text {
+  font-size: 12px;
+  color: #999;
+  margin-top: 4px;
+}
+.upload-tip {
+  color: #999;
+  font-size: 12px;
+  margin-top: 8px;
 }
 .spec-label {
   font-size: 12px;
